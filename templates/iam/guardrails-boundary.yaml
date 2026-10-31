@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Guardrails permissions boundary. Allows everything except a curated deny list.
+  Attached as the permissions boundary of the deployer role, and required on every
+  IAM role the deployer (or anything it creates) creates, so the guardrails cannot
+  be escaped by creating a new role.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Prefix reserved for foundation resources (stacks, IAM, SSM paths).
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+  DeployerUserName:
+    Type: String
+    Description: Name of the deployer IAM user (protected from modification).
+  DeployerRoleName:
+    Type: String
+    Description: Name of the deployer IAM role (protected from modification).
+  AllowedRegions:
+    Type: String
+    Default: ""
+    Description: >-
+      Comma-separated list of regions principals may use. Empty disables the region lock.
+
+Conditions:
+  HasRegionLock: !Not [!Equals [!Ref AllowedRegions, ""]]
+
+Resources:
+  GuardrailsBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${StackPrefix}-guardrails-boundary
+      Description: Permissions boundary for the deployer role and every role it creates.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowAll
+            Effect: Allow
+            Action: "*"
+            Resource: "*"
+
+          # Any role created or modified must carry this same boundary.
+          - Sid: DenyRolesWithoutBoundary
+            Effect: Deny
+            Action:
+              - iam:CreateRole
+              - iam:PutRolePermissionsBoundary
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:UpdateAssumeRolePolicy
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                iam:PermissionsBoundary: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${StackPrefix}-guardrails-boundary
+
+          - Sid: DenyBoundaryRemoval
+            Effect: Deny
+            Action:
+              - iam:DeleteRolePermissionsBoundary
+              - iam:DeleteUserPermissionsBoundary
+              - iam:PutUserPermissionsBoundary
+            Resource: "*"
+
+          # No new long-lived credentials or user/group based access paths.
+          - Sid: DenyLongLivedCredentials
+            Effect: Deny
+            Action:
+              - iam:CreateUser
+              - iam:CreateAccessKey
+              - iam:CreateLoginProfile
+              - iam:UpdateLoginProfile
+              - iam:CreateServiceSpecificCredential
+              - iam:UploadSSHPublicKey
+              - iam:UploadSigningCertificate
+              - iam:CreateGroup
+              - iam:AddUserToGroup
+              - iam:AttachUserPolicy
+              - iam:PutUserPolicy
+              - iam:AttachGroupPolicy
+              - iam:PutGroupPolicy
+            Resource: "*"
+
+          - Sid: DenyFoundationIamChanges
+            Effect: Deny
+            Action:
+              - iam:Add*
+              - iam:Attach*
+              - iam:Create*
+              - iam:Delete*
+              - iam:Detach*
+              - iam:Pass*
+              - iam:Put*
+              - iam:Remove*
+              - iam:Set*
+              - iam:Tag*
+              - iam:Untag*
+              - iam:Update*
+            Resource:
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackPrefix}-*
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${DeployerRoleName}
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${DeployerUserName}
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${StackPrefix}-*
+
+          - Sid: DenyFoundationStackChanges
+            Effect: Deny
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:CancelUpdateStack
+              - cloudformation:ContinueUpdateRollback
+              - cloudformation:RollbackStack
+              - cloudformation:SetStackPolicy
+              - cloudformation:UpdateTerminationProtection
+            Resource: !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/${StackPrefix}-*/*
+
+          - Sid: DenyFoundationNetworkChanges
+            Effect: Deny
+            Action:
+              - ec2:DeleteVpc
+              - ec2:DeleteSubnet
+              - ec2:DeleteRouteTable
+              - ec2:DeleteRoute
+              - ec2:ReplaceRoute
+              - ec2:DisassociateRouteTable
+              - ec2:ReplaceRouteTableAssociation
+              - ec2:DeleteInternetGateway
+              - ec2:DetachInternetGateway
+              - ec2:DeleteNatGateway
+              - ec2:DisassociateAddress
+              - ec2:ReleaseAddress
+              - ec2:DeleteNetworkAcl
+              - ec2:CreateNetworkAclEntry
+              - ec2:DeleteNetworkAclEntry
+              - ec2:ReplaceNetworkAclEntry
+              - ec2:ReplaceNetworkAclAssociation
+              - ec2:DeleteFlowLogs
+              - ec2:DeleteVpcEndpoints
+              - ec2:ModifyVpcEndpoint
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:ResourceTag/ManagedBy: !Sub ${StackPrefix}-foundation
+
+          # Keep the data tier isolated: no new routes (e.g. 0.0.0.0/0) in its route tables.
+          - Sid: DenyDataTierRoutes
+            Effect: Deny
+            Action: ec2:CreateRoute
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:ResourceTag/ManagedBy: !Sub ${StackPrefix}-foundation
+                aws:ResourceTag/Tier: data
+
+          - Sid: DenyFoundationTagChanges
+            Effect: Deny
+            Action:
+              - ec2:CreateTags
+              - ec2:DeleteTags
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:ResourceTag/ManagedBy: !Sub ${StackPrefix}-foundation
+              ForAnyValue:StringEquals:
+                aws:TagKeys: [ManagedBy, Tier]
+
+          - Sid: DenyFoundationSsmAndLogChanges
+            Effect: Deny
+            Action:
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:DeleteParameters
+              - ssm:LabelParameterVersion
+              - ssm:UnlabelParameterVersion
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+              - logs:DeleteLogGroup
+              - logs:DeleteLogStream
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+              - logs:DisassociateKmsKey
+            Resource:
+              - !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/${StackPrefix}/*
+              - !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/${StackPrefix}/*
+
+          - Sid: DenyAccountAndBillingChanges
+            Effect: Deny
+            Action:
+              - account:Put*
+              - account:Delete*
+              - account:Enable*
+              - account:Disable*
+              - account:Accept*
+              - account:Start*
+              - account:CloseAccount
+              - aws-portal:Modify*
+              - billing:Put*
+              - billing:Update*
+              - payments:Create*
+              - payments:Update*
+              - payments:Delete*
+              - tax:Put*
+              - tax:Update*
+              - tax:Delete*
+              - organizations:Accept*
+              - organizations:Create*
+              - organizations:Delete*
+              - organizations:Invite*
+              - organizations:Leave*
+              - organizations:Remove*
+            Resource: "*"
+
+          - Sid: DenySecurityTampering
+            Effect: Deny
+            Action:
+              - cloudtrail:StopLogging
+              - cloudtrail:DeleteTrail
+              - cloudtrail:UpdateTrail
+              - cloudtrail:PutEventSelectors
+              - guardduty:DeleteDetector
+              - guardduty:Disassociate*
+              - config:StopConfigurationRecorder
+              - config:DeleteConfigurationRecorder
+              - config:DeleteDeliveryChannel
+              - securityhub:DisableSecurityHub
+              - securityhub:Disassociate*
+              - access-analyzer:DeleteAnalyzer
+              - s3:PutAccountPublicAccessBlock
+              - ec2:DisableEbsEncryptionByDefault
+              - iam:DeleteAccountPasswordPolicy
+              - iam:UpdateAccountPasswordPolicy
+            Resource: "*"
+
+          - !If
+            - HasRegionLock
+            - Sid: DenyOutsideAllowedRegions
+              Effect: Deny
+              # Global services are served from a single region and must stay exempt.
+              NotAction:
+                - iam:*
+                - sts:*
+                - organizations:*
+                - account:*
+                - aws-portal:*
+                - billing:*
+                - ce:*
+                - cur:*
+                - budgets:*
+                - pricing:*
+                - support:*
+                - trustedadvisor:*
+                - health:*
+                - cloudfront:*
+                - route53:*
+                - route53domains:*
+                - globalaccelerator:*
+                - waf:*
+                - shield:*
+                - sso:*
+                - s3:ListAllMyBuckets
+                - s3:GetBucketLocation
+                - s3:GetAccountPublicAccessBlock
+              Resource: "*"
+              Condition:
+                StringNotEquals:
+                  aws:RequestedRegion: !Split [",", !Ref AllowedRegions]
+            - !Ref AWS::NoValue
+
+  GuardrailsBoundaryArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${StackPrefix}/iam/guardrails-boundary/arn
+      Type: String
+      Value: !Ref GuardrailsBoundary
+      Description: ARN of the guardrails permissions boundary.
+
+Outputs:
+  GuardrailsBoundaryArn:
+    Description: ARN of the guardrails permissions boundary.
+    Value: !Ref GuardrailsBoundary

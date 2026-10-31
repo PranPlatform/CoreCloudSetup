@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Deployer IAM role. AdministratorAccess capped by the guardrails permissions
+  boundary. Assumable only by the deployer IAM user.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Prefix reserved for foundation resources (stacks, IAM, SSM paths).
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+  DeployerRoleName:
+    Type: String
+    Description: Name of the deployer IAM role.
+  DeployerUserArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the deployer user ARN (the only trusted principal).
+  GuardrailsBoundaryArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the guardrails boundary ARN.
+  MaxSessionDuration:
+    Type: Number
+    Default: 3600
+    MinValue: 3600
+    MaxValue: 43200
+    Description: Maximum STS session duration in seconds.
+  AllowedSourceIps:
+    Type: String
+    Default: ""
+    Description: >-
+      Comma-separated CIDRs the role may be assumed from. Empty allows any source IP.
+
+Conditions:
+  HasSourceIpRestriction: !Not [!Equals [!Ref AllowedSourceIps, ""]]
+
+Resources:
+  DeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref DeployerRoleName
+      Description: Admin-like deployer role, restricted by the guardrails boundary.
+      MaxSessionDuration: !Ref MaxSessionDuration
+      PermissionsBoundary: !Ref GuardrailsBoundaryArn
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TrustDeployerUser
+            Effect: Allow
+            Principal:
+              AWS: !Ref DeployerUserArn
+            Action: sts:AssumeRole
+            Condition: !If
+              - HasSourceIpRestriction
+              - IpAddress:
+                  aws:SourceIp: !Split [",", !Ref AllowedSourceIps]
+              - !Ref AWS::NoValue
+
+  DeployerRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${StackPrefix}/iam/deployer-role/arn
+      Type: String
+      Value: !GetAtt DeployerRole.Arn
+      Description: ARN of the deployer IAM role.
+
+Outputs:
+  DeployerRoleArn:
+    Description: ARN of the deployer IAM role.
+    Value: !GetAtt DeployerRole.Arn

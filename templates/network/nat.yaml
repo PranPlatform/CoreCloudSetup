@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  NAT gateways for the private tier, plus the private tier default routes.
+  Owning the routes here means this stack can be deleted (to stop NAT charges)
+  without touching the subnets.
+    single - one NAT in the first AZ; both private route tables use it.
+    per-az - one NAT per AZ; each private route table uses its own AZ's NAT.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Prefix reserved for foundation resources (stacks, IAM, SSM paths).
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+  NatMode:
+    Type: String
+    Default: single
+    AllowedValues: [single, per-az]
+    Description: One shared NAT gateway, or one per availability zone.
+  PublicSubnetAId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Description: SSM parameter holding the public subnet ID in the first AZ.
+  PublicSubnetBId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Description: SSM parameter holding the public subnet ID in the second AZ.
+  PrivateRouteTableAId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the private route table ID in the first AZ.
+  PrivateRouteTableBId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the private route table ID in the second AZ.
+
+Conditions:
+  IsPerAz: !Equals [!Ref NatMode, per-az]
+
+Resources:
+  NatEipA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-nat-a
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref PublicSubnetAId
+      AllocationId: !GetAtt NatEipA.AllocationId
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-nat-a
+
+  NatEipB:
+    Type: AWS::EC2::EIP
+    Condition: IsPerAz
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-nat-b
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Condition: IsPerAz
+    Properties:
+      SubnetId: !Ref PublicSubnetBId
+      AllocationId: !GetAtt NatEipB.AllocationId
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-nat-b
+
+  PrivateDefaultRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAId
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateDefaultRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableBId
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [IsPerAz, !Ref NatGatewayB, !Ref NatGatewayA]
+
+Outputs:
+  NatGatewayAId:
+    Description: NAT gateway in the first AZ.
+    Value: !Ref NatGatewayA
+  NatGatewayBId:
+    Condition: IsPerAz
+    Description: NAT gateway in the second AZ.
+    Value: !Ref NatGatewayB
+  NatPublicIps:
+    Description: Public egress IPs of the private tier (for allow-listing).
+    Value: !If
+      - IsPerAz
+      - !Join [",", [!Ref NatEipA, !Ref NatEipB]]
+      - !Ref NatEipA

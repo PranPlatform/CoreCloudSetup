@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Deployer IAM user. Its only permission is assuming the deployer role to obtain
+  short-lived STS credentials. No console access. The access key is created
+  out-of-band (console) so the secret never lands in CloudFormation.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Prefix reserved for foundation resources (stacks, IAM, SSM paths).
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+  DeployerUserName:
+    Type: String
+    Description: Name of the deployer IAM user.
+  DeployerRoleName:
+    Type: String
+    Description: >-
+      Name of the deployer role this user may assume. The role is created in a
+      later stack; identity policies do not require the target to exist yet.
+  GuardrailsBoundaryArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the guardrails boundary ARN.
+
+Resources:
+  DeployerUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref DeployerUserName
+      PermissionsBoundary: !Ref GuardrailsBoundaryArn
+      Policies:
+        - PolicyName: assume-deployer-role
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AssumeDeployerRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${DeployerRoleName}
+
+  DeployerUserArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${StackPrefix}/iam/deployer-user/arn
+      Type: String
+      Value: !GetAtt DeployerUser.Arn
+      Description: ARN of the deployer IAM user.
+
+Outputs:
+  DeployerUserArn:
+    Description: ARN of the deployer IAM user.
+    Value: !GetAtt DeployerUser.Arn

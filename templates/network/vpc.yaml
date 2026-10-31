@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Core VPC: the VPC itself, its internet gateway, and VPC flow logs.
+  Subnets, NAT and endpoints live in their own stacks.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Prefix reserved for foundation resources (stacks, IAM, SSM paths).
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/22
+    Description: IPv4 CIDR block of the VPC.
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/(1[6-9]|2[0-8])$"
+  FlowLogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: Retention of VPC flow logs in CloudWatch Logs.
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${StackPrefix}/vpc/flow-logs
+      RetentionInDays: !Ref FlowLogRetentionDays
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${StackPrefix}-vpc-flow-logs
+      Description: Lets the VPC flow logs service write to CloudWatch Logs.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: write-flow-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !GetAtt FlowLogGroup.Arn
+
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref Vpc
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-vpc-flow-logs
+
+  VpcIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${StackPrefix}/network/vpc/id
+      Type: String
+      Value: !Ref Vpc
+      Description: ID of the core VPC.
+
+  VpcCidrParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${StackPrefix}/network/vpc/cidr
+      Type: String
+      Value: !GetAtt Vpc.CidrBlock
+      Description: IPv4 CIDR block of the core VPC.
+
+  InternetGatewayIdParameter:
+    Type: AWS::SSM::Parameter
+    # The ID is only useful once the gateway is attached to the VPC.
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Name: !Sub /${StackPrefix}/network/igw/id
+      Type: String
+      Value: !Ref InternetGateway
+      Description: ID of the core VPC internet gateway.
+
+Outputs:
+  VpcId:
+    Description: ID of the core VPC.
+    Value: !Ref Vpc
+  VpcCidr:
+    Description: IPv4 CIDR block of the core VPC.
+    Value: !GetAtt Vpc.CidrBlock
+  InternetGatewayId:
+    Description: ID of the internet gateway.
+    Value: !Ref InternetGateway

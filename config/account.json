@@ -1,0 +1,26 @@
+{
+  "region": "us-west-2",
+  "stackPrefix": "PranCloudCore",
+  "allowedRegions": ["us-east-1", "us-west-2"],
+  "tags": {
+    "Project": "core-foundation",
+    "Environment": "experiment",
+    "Owner": "pranav"
+  },
+  "iam": {
+    "deployerUserName": "core-deployer",
+    "deployerRoleName": "core-deployer-role",
+    "maxSessionDurationSeconds": 3600,
+    "allowedSourceIps": []
+  },
+  "network": {
+    "vpcCidr": "10.0.0.0/22",
+    "natMode": "single",
+    "flowLogRetentionDays": 30,
+    "tiers": {
+      "public":  { "cidrA": "10.0.0.0/25", "cidrB": "10.0.0.128/25" },
+      "private": { "cidrA": "10.0.1.0/25", "cidrB": "10.0.1.128/25" },
+      "data":    { "cidrA": "10.0.2.0/25", "cidrB": "10.0.2.128/25" }
+    }
+  }
+}

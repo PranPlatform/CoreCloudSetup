@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Gateway VPC endpoints for S3 and DynamoDB on the private tier route tables.
+  Gateway endpoints are free and keep S3/DynamoDB traffic (ECR image layers,
+  backups, etc.) off the NAT gateway.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Description: Prefix reserved for foundation resources (stacks, IAM, SSM paths).
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+  VpcId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Description: SSM parameter holding the VPC ID.
+  PrivateRouteTableAId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the private route table ID in the first AZ.
+  PrivateRouteTableBId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: SSM parameter holding the private route table ID in the second AZ.
+
+Resources:
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Gateway
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      RouteTableIds:
+        - !Ref PrivateRouteTableAId
+        - !Ref PrivateRouteTableBId
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-s3
+
+  DynamoDbEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Gateway
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      RouteTableIds:
+        - !Ref PrivateRouteTableAId
+        - !Ref PrivateRouteTableBId
+      Tags:
+        - Key: Name
+          Value: !Sub ${StackPrefix}-dynamodb
+
+Outputs:
+  S3EndpointId:
+    Description: S3 gateway endpoint.
+    Value: !Ref S3Endpoint
+  DynamoDbEndpointId:
+    Description: DynamoDB gateway endpoint.
+    Value: !Ref DynamoDbEndpoint
